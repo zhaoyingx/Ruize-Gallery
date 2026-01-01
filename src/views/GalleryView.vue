@@ -147,9 +147,28 @@ function openLightbox(index: number) {
   lightboxVisible.value = true
 }
 
+const preloadedIndices = new Set<number>()
+
+function preloadImages(startIndex: number, count: number) {
+  const items = galleryStore.items
+  for (let i = startIndex; i < Math.min(startIndex + count, items.length); i++) {
+    if (preloadedIndices.has(i)) {
+      continue
+    }
+    const item = items[i]
+    if (item) {
+      const img = new Image()
+      img.src = getConvertedImageUrl(item.key)
+      preloadedIndices.add(i)
+    }
+  }
+}
+
 async function loadData() {
   try {
     await galleryStore.loadGallery(year.value)
+    preloadedIndices.clear()
+    preloadImages(0, 5)
   } catch (error) {
     console.error('Failed to load gallery data:', error)
   }

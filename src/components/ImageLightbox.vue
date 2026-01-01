@@ -24,12 +24,18 @@
 
         <div class="lightbox-content">
           <div class="lightbox-image-section">
-            <div class="image-wrapper">
+            <div
+              class="image-wrapper"
+              @mousemove="handleMouseMove"
+              @mouseleave="showZoom = false"
+              ref="imageContainer"
+            >
               <v-img
                 :src="getConvertedImageUrl(currentImage.key)"
                 :alt="getFileName(currentImage.key)"
                 max-height="75vh"
                 class="lightbox-image"
+                @load="imageLoaded = true"
               >
                 <template v-slot:placeholder>
                   <div class="d-flex align-center justify-center fill-height">
@@ -37,6 +43,10 @@
                   </div>
                 </template>
               </v-img>
+
+              <div v-if="showZoom" class="zoom-lens" :style="zoomLensStyle"></div>
+
+              <div v-if="showZoom" class="zoom-result" :style="zoomResultStyle"></div>
             </div>
           </div>
 
@@ -70,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { getConvertedImageUrl } from '@/api/gallery'
 import type { GalleryItem } from '@/types/gallery'
 
@@ -87,9 +97,148 @@ const emit = defineEmits<{
   'update:currentIndex': [value: number]
 }>()
 
+const imageContainer = ref<HTMLElement | null>(null)
+const showZoom = ref(false)
+const mouseX = ref(0)
+const mouseY = ref(0)
+const zoomLevel = 2.5
+const imageLoaded = ref(false)
+const zoomEnabled = ref(false)
+
+const preloadedIndices = new Set<number>()
+
+function preloadImages(startIndex: number, count: number) {
+  for (let i = startIndex; i < Math.min(startIndex + count, props.items.length); i++) {
+    if (preloadedIndices.has(i)) {
+      continue
+    }
+    const item = props.items[i]
+    if (item) {
+      const img = new Image()
+      img.src = getConvertedImageUrl(item.key)
+      preloadedIndices.add(i)
+    }
+  }
+}
+
 const currentImage = computed(() => {
   return props.items[props.currentIndex] || null
 })
+
+const zoomLensStyle = computed(() => {
+  const lensSize = 150
+  return {
+    left: `${mouseX.value - lensSize / 2}px`,
+    top: `${mouseY.value - lensSize / 2}px`,
+    width: `${lensSize}px`,
+    height: `${lensSize}px`,
+  }
+})
+
+const zoomResultStyle = computed(() => {
+  if (!imageContainer.value || !currentImage.value || !imageLoaded.value) {
+    return { display: 'none' }
+  }
+
+  const imgElements = imageContainer.value.querySelectorAll('img')
+  let imgElement: HTMLImageElement | null = null
+
+  console.log(
+    'Checking images, currentIndex:',
+    props.currentIndex,
+    'total imgs:',
+    imgElements.length,
+    'imageLoaded:',
+    imageLoaded.value,
+  )
+
+  for (const img of Array.from(imgElements)) {
+    console.log('Image check:', {
+      src: img.src,
+      complete: img.complete,
+      naturalWidth: img.naturalWidth,
+      naturalHeight: img.naturalHeight,
+    })
+    if (img.complete && img.naturalWidth > 0) {
+      imgElement = img as HTMLImageElement
+      break
+    }
+  }
+
+  if (!imgElement) {
+    console.log('No ready image found for zoom')
+    return { display: 'none' }
+  }
+
+  const imgRect = imgElement.getBoundingClientRect()
+  const containerRect = imageContainer.value.getBoundingClientRect()
+
+  const mouseXInContainer = mouseX.value + containerRect.left
+  const mouseYInContainer = mouseY.value + containerRect.top
+
+  const relativeX = mouseXInContainer - imgRect.left
+  const relativeY = mouseYInContainer - imgRect.top
+
+  const bgPosX = (relativeX / imgRect.width) * 100
+  const bgPosY = (relativeY / imgRect.height) * 100
+
+  const resultSize = 250
+  const offset = 30
+  let left = mouseX.value + offset
+  let top = mouseY.value + offset
+
+  if (left + resultSize > containerRect.width) {
+    left = mouseX.value - resultSize - offset
+  }
+  if (top + resultSize > containerRect.height) {
+    top = mouseY.value - resultSize - offset
+  }
+
+  console.log('Zoom style:', {
+    src: imgElement.src,
+    bgPosX,
+    bgPosY,
+    size: `${imgRect.width * zoomLevel}px ${imgRect.height * zoomLevel}px`,
+  })
+
+  return {
+    backgroundImage: `url("${imgElement.src}")`,
+    backgroundPosition: `${bgPosX}% ${bgPosY}%`,
+    backgroundSize: `${imgRect.width * zoomLevel}px ${imgRect.height * zoomLevel}px`,
+    left: `${left}px`,
+    top: `${top}px`,
+    display: 'block',
+  }
+})
+
+function handleMouseMove(event: MouseEvent) {
+  if (!imageContainer.value) return
+
+  const imgElement = imageContainer.value.querySelector('img')
+  if (!imgElement) return
+
+  const imgRect = imgElement.getBoundingClientRect()
+  const containerRect = imageContainer.value.getBoundingClientRect()
+
+  const relativeX = event.clientX - imgRect.left
+  const relativeY = event.clientY - imgRect.top
+
+  if (
+    relativeX >= 0 &&
+    relativeX <= imgRect.width &&
+    relativeY >= 0 &&
+    relativeY <= imgRect.height
+  ) {
+    if (!zoomEnabled.value) {
+      zoomEnabled.value = true
+      showZoom.value = true
+    }
+    mouseX.value = event.clientX - containerRect.left
+    mouseY.value = event.clientY - containerRect.top
+  } else {
+    showZoom.value = false
+  }
+}
 
 function getFileName(key: string): string {
   const parts = key.split('/')
@@ -102,15 +251,38 @@ function closeDialog(value: boolean) {
 
 function prevImage() {
   if (props.currentIndex > 0) {
+    imageLoaded.value = false
+    zoomEnabled.value = false
     emit('update:currentIndex', props.currentIndex - 1)
   }
 }
 
 function nextImage() {
   if (props.currentIndex < props.items.length - 1) {
+    imageLoaded.value = false
+    zoomEnabled.value = false
     emit('update:currentIndex', props.currentIndex + 1)
   }
 }
+
+watch(
+  () => props.visible,
+  (newVal) => {
+    if (newVal) {
+      imageLoaded.value = false
+      zoomEnabled.value = false
+      preloadImages(5, 5)
+    }
+  },
+)
+
+watch(
+  () => props.currentIndex,
+  (newIndex) => {
+    const nextBatchStart = Math.floor((newIndex + 5) / 5) * 5 + 5
+    preloadImages(nextBatchStart, 5)
+  },
+)
 </script>
 
 <style scoped>
@@ -223,6 +395,30 @@ function nextImage() {
   max-width: 100%;
   height: 100%;
   overflow: hidden;
+  position: relative;
+  cursor: crosshair;
+}
+
+.zoom-lens {
+  position: absolute;
+  border: 3px solid #f7971e;
+  border-radius: 50%;
+  pointer-events: none;
+  background: rgba(247, 151, 30, 0.1);
+  z-index: 10;
+}
+
+.zoom-result {
+  position: absolute;
+  width: 250px;
+  height: 250px;
+  border: 3px solid #f7971e;
+  border-radius: 16px;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  background-color: white;
 }
 
 .lightbox-image {
